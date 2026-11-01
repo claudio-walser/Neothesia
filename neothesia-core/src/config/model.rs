@@ -66,6 +66,18 @@ impl Default for WaterfallConfig {
 pub struct PlaybackConfigV1 {
     #[serde(default = "default_speed_multiplier")]
     pub speed_multiplier: f32,
+
+    /// Play along judges press and release timing instead of waiting for keys
+    #[serde(default)]
+    pub strict_timing: bool,
+
+    /// In strict timing mode, still stop the song until the right key is pressed
+    #[serde(default)]
+    pub strict_timing_wait: bool,
+
+    /// Allowed press and release deviation in strict timing mode
+    #[serde(default = "default_timing_tolerance_ms")]
+    pub timing_tolerance_ms: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,6 +89,9 @@ impl Default for PlaybackConfig {
     fn default() -> Self {
         Self::V1(PlaybackConfigV1 {
             speed_multiplier: default_speed_multiplier(),
+            strict_timing: false,
+            strict_timing_wait: false,
+            timing_tolerance_ms: default_timing_tolerance_ms(),
         })
     }
 }
@@ -260,6 +275,10 @@ impl Default for PcKeyboardConfig {
 
 fn default_piano_range() -> (u8, u8) {
     (21, 108)
+}
+
+fn default_timing_tolerance_ms() -> u32 {
+    100
 }
 
 fn default_speed_multiplier() -> f32 {

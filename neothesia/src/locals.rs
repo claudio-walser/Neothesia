@@ -291,6 +291,54 @@ pub mod settings {
         }
     }
 
+    pub fn strict_timing() -> String {
+        match LOCAL.as_str() {
+            "pl" => "Dokładny rytm".into(),
+            "de" => "Exaktes Timing".into(),
+            _ => "Strict Timing".into(),
+        }
+    }
+
+    pub fn strict_timing_subtitle() -> String {
+        match LOCAL.as_str() {
+            "pl" => "Play Along ocenia początek i koniec każdej nuty".into(),
+            "de" => "Play Along bewertet Anschlag und Loslassen jeder Note".into(),
+            _ => "Play Along judges press and release of every note".into(),
+        }
+    }
+
+    pub fn strict_timing_wait() -> String {
+        match LOCAL.as_str() {
+            "pl" => "Czekaj na klawisze".into(),
+            "de" => "Auf Tasten warten".into(),
+            _ => "Wait For Keys".into(),
+        }
+    }
+
+    pub fn strict_timing_wait_subtitle() -> String {
+        match LOCAL.as_str() {
+            "pl" => "Utwór zatrzymuje się, dopóki nie naciśniesz właściwego klawisza".into(),
+            "de" => "Song hält an, bis die richtige Taste gedrückt ist".into(),
+            _ => "The song stops until the right key is pressed".into(),
+        }
+    }
+
+    pub fn timing_tolerance() -> String {
+        match LOCAL.as_str() {
+            "pl" => "Tolerancja czasu".into(),
+            "de" => "Reaktionszeit".into(),
+            _ => "Timing Tolerance".into(),
+        }
+    }
+
+    pub fn timing_tolerance_subtitle(ms: u32) -> String {
+        match LOCAL.as_str() {
+            "pl" => format!("±{ms} ms dla naciśnięcia i puszczenia"),
+            "de" => format!("±{ms} ms für Anschlag und Loslassen"),
+            _ => format!("±{ms} ms for press and release"),
+        }
+    }
+
     pub fn fingering() -> String {
         match LOCAL.as_str() {
             "pl" => "Palcowanie".into(),

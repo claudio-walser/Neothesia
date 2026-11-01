@@ -1,12 +1,16 @@
 use midi_file::{MidiNote, midly::MidiMessage};
 use neothesia_core::{
+    Color,
     fingering::{Fingering, NoteKey},
     render::{
         FingeringLabels, GlowRenderer, GuidelineRenderer, NoteLabels, QuadInstance, QuadRenderer,
         TextRenderer,
     },
 };
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use winit::{
     event::{ElementState, KeyEvent, WindowEvent},
     keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
@@ -16,8 +20,13 @@ use self::top_bar::TopBar;
 
 use super::{NuonRenderer, Scene};
 use crate::{
-    NeothesiaEvent, context::Context, locals, render::WaterfallRenderer,
-    scene::MouseToMidiEventState, song::Song, utils::window::WinitEvent,
+    NeothesiaEvent,
+    context::Context,
+    locals,
+    render::WaterfallRenderer,
+    scene::MouseToMidiEventState,
+    song::{PlayerConfig, Song},
+    utils::window::WinitEvent,
 };
 
 mod keyboard;
@@ -30,6 +39,9 @@ mod rewind_controller;
 use rewind_controller::RewindController;
 
 mod toast_manager;
+
+mod timing_judge;
+use timing_judge::{Judgement, TimingJudge};
 use toast_manager::ToastManager;
 
 mod animation;
@@ -48,6 +60,10 @@ pub struct PlayingScene {
     selected_note: Option<MidiNote>,
     /// Time the waterfall was last rendered at
     waterfall_time: f32,
+    /// Strict timing mode, `None` when the song is not waiting for the user
+    timing_judge: Option<TimingJudge>,
+    /// Keys showing a verdict color, with the moment it was shown
+    judged_keys: HashMap<u8, Instant>,
 
     player: MidiPlayer,
     rewind_controller: RewindController,
@@ -116,6 +132,14 @@ impl PlayingScene {
             )
         });
 
+        let timing_judge = ctx.config.strict_timing().then(|| {
+            TimingJudge::new(waterfall.notes().iter(), |note| {
+                song.config.tracks[note.track_id].player == PlayerConfig::Human
+                    && keyboard_layout.range.contains(note.note)
+                    && note.channel != 9
+            })
+        });
+
         let player = MidiPlayer::new(
             ctx.output_manager.connection().clone(),
             song,
@@ -140,6 +164,8 @@ impl PlayingScene {
             fingering_labels,
             selected_note: None,
             waterfall_time: 0.0,
+            timing_judge,
+            judged_keys: HashMap::new(),
             text_renderer,
             nuon_renderer: NuonRenderer::new(ctx),
 
@@ -211,7 +237,9 @@ impl PlayingScene {
             self.keyboard.reset_notes();
         }
 
-        if self.player.play_along().are_required_keys_pressed() {
+        // Strict timing mode only waits for the player when asked to
+        let waits_for_player = self.timing_judge.is_none() || ctx.config.strict_timing_wait();
+        if !waits_for_player || self.player.play_along().are_required_keys_pressed() {
             let delta = (delta / 10) * (ctx.config.speed_multiplier() * 10.0) as u32;
             let midi_events = self.player.update(delta);
             self.keyboard.file_midi_events(&ctx.config, &midi_events);
@@ -239,6 +267,52 @@ impl PlayingScene {
 }
 
 impl PlayingScene {
+    fn update_timing_judge(&mut self, ctx: &Context, previous_time: f32, time: f32) {
+        let Some(judge) = self.timing_judge.as_mut() else {
+            return;
+        };
+
+        /// How long a key keeps the verdict color
+        const KEY_FLASH: Duration = Duration::from_millis(500);
+
+        let now = Instant::now();
+
+        // Rewinds, loops and seeks re-arm the notes ahead
+        let jumped = time < previous_time || time - previous_time > 0.5;
+        if self.rewind_controller.is_rewinding() || jumped {
+            judge.seek(time);
+            for (key, _) in self.judged_keys.drain() {
+                self.keyboard.set_judgement(key, None);
+            }
+        } else {
+            judge.update(time, timing_tolerance(ctx));
+        }
+
+        for (note_id, judgement) in judge.take_changes() {
+            let color = match judgement {
+                Judgement::Hit => Some(Color::from_rgba8(52, 199, 89, 1.0)),
+                Judgement::Miss => Some(Color::from_rgba8(255, 59, 48, 1.0)),
+                Judgement::Pending | Judgement::Pressed | Judgement::Skipped => None,
+            };
+            self.waterfall.set_note_color(note_id, color);
+
+            if let (Some(color), Some(note)) = (color, self.waterfall.notes().get(note_id)) {
+                let key = note.note;
+                self.keyboard.set_judgement(key, Some(color));
+                self.judged_keys.insert(key, now);
+            }
+        }
+
+        let keyboard = &mut self.keyboard;
+        self.judged_keys.retain(|&key, shown| {
+            let keep = now.duration_since(*shown) < KEY_FLASH;
+            if !keep {
+                keyboard.set_judgement(key, None);
+            }
+            keep
+        });
+    }
+
     /// Drops the selection once playback continues and draws the selection outline
     fn update_fingering_selection(&mut self, ctx: &Context) {
         if !self.player.is_paused() {
@@ -393,7 +467,8 @@ impl Scene for PlayingScene {
         self.toast_manager.update(&mut self.text_renderer);
 
         let time = self.update_midi_player(ctx, delta);
-        self.waterfall_time = time;
+        let previous_time = std::mem::replace(&mut self.waterfall_time, time);
+        self.update_timing_judge(ctx, previous_time, time);
         self.waterfall.update(time);
         self.guidelines.update(
             &mut self.quad_renderer_bg,
@@ -527,10 +602,30 @@ impl Scene for PlayingScene {
         super::handle_nuon_window_event(&mut self.nuon, event, ctx);
     }
 
-    fn midi_event(&mut self, _ctx: &mut Context, channel: u8, message: &MidiMessage) {
+    fn midi_event(&mut self, ctx: &mut Context, channel: u8, message: &MidiMessage) {
+        if let Some(judge) = self.timing_judge.as_mut()
+            && !self.player.is_paused()
+        {
+            let tolerance = timing_tolerance(ctx);
+            match message {
+                MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
+                    judge.press(key.as_int(), self.waterfall_time, tolerance);
+                }
+                MidiMessage::NoteOn { key, .. } | MidiMessage::NoteOff { key, .. } => {
+                    judge.release(key.as_int(), self.waterfall_time, tolerance);
+                }
+                _ => {}
+            }
+        }
+
         self.player.user_midi_event(channel, message);
         self.keyboard.user_midi_event(message);
     }
+}
+
+/// Configured tolerance in real time, expressed in song time
+fn timing_tolerance(ctx: &Context) -> f32 {
+    ctx.config.timing_tolerance_ms() as f32 / 1000.0 * ctx.config.speed_multiplier()
 }
 
 fn handle_settings_input(

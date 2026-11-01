@@ -434,6 +434,54 @@ impl super::MenuScene {
 
                         spacer(ui);
 
+                        if render_toggler()
+                            .icon(icons::note_list_icon())
+                            .title(locals::settings::strict_timing())
+                            .subtitle(locals::settings::strict_timing_subtitle())
+                            .value(ctx.config.strict_timing())
+                            .build(ui, rows)
+                        {
+                            ctx.config.set_strict_timing(!ctx.config.strict_timing());
+                        }
+
+                        if ctx.config.strict_timing() {
+                            spacer(ui);
+
+                            if render_toggler()
+                                .icon(icons::pause_icon())
+                                .title(locals::settings::strict_timing_wait())
+                                .subtitle(locals::settings::strict_timing_wait_subtitle())
+                                .value(ctx.config.strict_timing_wait())
+                                .build(ui, rows)
+                            {
+                                ctx.config
+                                    .set_strict_timing_wait(!ctx.config.strict_timing_wait());
+                            }
+
+                            spacer(ui);
+
+                            match nuon::settings_row_spin()
+                                .title(locals::settings::timing_tolerance())
+                                .subtitle(locals::settings::timing_tolerance_subtitle(
+                                    ctx.config.timing_tolerance_ms(),
+                                ))
+                                .id("timing_tolerance")
+                                .build(ui, rows)
+                            {
+                                nuon::SettingsRowSpinResult::Plus => ctx
+                                    .config
+                                    .set_timing_tolerance_ms(ctx.config.timing_tolerance_ms() + 10),
+                                nuon::SettingsRowSpinResult::Minus => {
+                                    ctx.config.set_timing_tolerance_ms(
+                                        ctx.config.timing_tolerance_ms().saturating_sub(10),
+                                    )
+                                }
+                                nuon::SettingsRowSpinResult::Idle => {}
+                            }
+                        }
+
+                        spacer(ui);
+
                         if let Some(naming) = note_naming_row(
                             ui,
                             rows,

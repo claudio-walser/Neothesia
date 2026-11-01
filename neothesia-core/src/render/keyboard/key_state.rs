@@ -11,6 +11,8 @@ pub struct KeyState {
 
     pressed_by_file: Option<Color>,
     pressed_by_user: Option<Color>,
+    /// Play along verdict feedback, shown above everything else
+    judgement: Option<Color>,
 }
 
 impl KeyState {
@@ -20,6 +22,7 @@ impl KeyState {
 
             pressed_by_file: None,
             pressed_by_user: None,
+            judgement: None,
         }
     }
 
@@ -59,8 +62,14 @@ impl KeyState {
         self.pressed_by_file = None;
     }
 
+    pub fn set_judgement(&mut self, color: Option<Color>) {
+        self.judgement = color;
+    }
+
     pub fn color(&self) -> Color {
-        if let Some(color) = self.pressed_by_user {
+        if let Some(color) = self.judgement {
+            color
+        } else if let Some(color) = self.pressed_by_user {
             color
         } else if let Some(color) = self.pressed_by_file {
             color

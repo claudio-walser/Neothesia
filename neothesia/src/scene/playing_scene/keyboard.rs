@@ -1,5 +1,6 @@
 use midi_file::midly::MidiMessage;
 use neothesia_core::{
+    Color,
     config::ColorSchemaV1,
     piano_layout,
     render::{KeyboardKeyState, QuadRenderer, TextRenderer},
@@ -109,6 +110,17 @@ impl Keyboard {
 
     pub fn reset_notes(&mut self) {
         self.renderer.reset_notes()
+    }
+
+    /// Colors a key to show a play along verdict, `None` clears it
+    pub fn set_judgement(&mut self, key: u8, color: Option<Color>) {
+        if !self.range().contains(key) {
+            return;
+        }
+
+        let id = (key - self.range().start()) as usize;
+        self.renderer.key_states_mut()[id].set_judgement(color);
+        self.renderer.invalidate_quad_cache();
     }
 
     pub fn user_midi_event(&mut self, message: &MidiMessage) {

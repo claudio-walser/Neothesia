@@ -33,6 +33,10 @@ impl NoteList {
         self.inner.len()
     }
 
+    pub fn get(&self, id: usize) -> Option<&MidiNote> {
+        self.inner.get(id)
+    }
+
     /// Notes sorted by start time
     pub fn iter(&self) -> std::slice::Iter<'_, MidiNote> {
         self.inner.iter()
@@ -42,6 +46,11 @@ impl NoteList {
 pub struct WaterfallRenderer {
     notes_pipeline: WaterfallPipeline,
     notes: NoteList,
+    /// Per [`NoteList`] index: instance index and its schema color
+    instances: Vec<Option<(usize, [f32; 3])>>,
+    /// Per [`NoteList`] index: color replacing the schema color
+    color_overrides: Vec<Option<Color>>,
+    instances_dirty: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
@@ -60,6 +69,9 @@ impl WaterfallRenderer {
         let notes_pipeline = WaterfallPipeline::new(gpu, transform_uniform, notes.len());
         let mut notes = Self {
             notes_pipeline,
+            instances: Vec::new(),
+            color_overrides: vec![None; notes.len()],
+            instances_dirty: false,
             notes,
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
@@ -88,6 +100,7 @@ impl WaterfallRenderer {
         self.notes = NoteList {
             inner: notes.into(),
         };
+        self.color_overrides = vec![None; self.notes.len()];
         self.resize(config, layout);
     }
 
@@ -95,9 +108,10 @@ impl WaterfallRenderer {
         let range_start = layout.range.start() as usize;
 
         self.notes_pipeline.clear();
+        self.instances.clear();
 
         let mut longer_than_range = false;
-        for note in self.notes.inner.iter() {
+        for (note_id, note) in self.notes.inner.iter().enumerate() {
             if layout.range.contains(note.note) && note.channel != 9 {
                 let key = &layout.keys[note.note as usize - range_start];
 
@@ -110,6 +124,12 @@ impl WaterfallRenderer {
                     color.base
                 };
                 let color: Color = color.into();
+                let color = color.into_linear_rgb();
+                self.instances
+                    .push(Some((self.notes_pipeline.instances().len(), color)));
+                let color = self.color_overrides[note_id]
+                    .map(|c| c.into_linear_rgb())
+                    .unwrap_or(color);
 
                 let h = if note.duration.as_secs_f32() >= 0.1 {
                     note.duration.as_secs_f32()
@@ -120,10 +140,11 @@ impl WaterfallRenderer {
                 self.notes_pipeline.instances().push(NoteInstance {
                     position: [key.x(), note.start.as_secs_f32()],
                     size: [key.width() - 1.0, h - 0.01], // h - 0.01 to make a little gap bettwen successive notes
-                    color: color.into_linear_rgb(),
+                    color,
                     radius: key.width() * 0.2,
                 });
             } else {
+                self.instances.push(None);
                 longer_than_range = true;
             }
         }
@@ -140,6 +161,25 @@ impl WaterfallRenderer {
 
     pub fn update(&mut self, time: f32) {
         self.notes_pipeline.update_time(&self.queue, time);
+
+        if self.instances_dirty {
+            self.instances_dirty = false;
+            self.notes_pipeline.prepare(&self.device, &self.queue);
+        }
+    }
+
+    /// Recolors a single note, `None` restores the color schema color
+    pub fn set_note_color(&mut self, note_id: usize, color: Option<Color>) {
+        let Some(slot) = self.color_overrides.get_mut(note_id) else {
+            return;
+        };
+        *slot = color;
+
+        if let Some(Some((instance_id, schema_color))) = self.instances.get(note_id) {
+            self.notes_pipeline.instances()[*instance_id].color =
+                color.map(|c| c.into_linear_rgb()).unwrap_or(*schema_color);
+            self.instances_dirty = true;
+        }
     }
 
     #[profiling::function]

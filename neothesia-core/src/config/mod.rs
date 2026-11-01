@@ -293,6 +293,30 @@ impl Config {
         self.playback.speed_multiplier = speed_multiplier.max(0.0);
     }
 
+    pub fn strict_timing(&self) -> bool {
+        self.playback.strict_timing
+    }
+
+    pub fn set_strict_timing(&mut self, strict: bool) {
+        self.playback.strict_timing = strict;
+    }
+
+    pub fn strict_timing_wait(&self) -> bool {
+        self.playback.strict_timing_wait
+    }
+
+    pub fn set_strict_timing_wait(&mut self, wait: bool) {
+        self.playback.strict_timing_wait = wait;
+    }
+
+    pub fn timing_tolerance_ms(&self) -> u32 {
+        self.playback.timing_tolerance_ms
+    }
+
+    pub fn set_timing_tolerance_ms(&mut self, ms: u32) {
+        self.playback.timing_tolerance_ms = ms.clamp(20, 500);
+    }
+
     pub fn pc_keyboard_octave(&self) -> u8 {
         self.pc_keyboard.octave_shift.min(10)
     }

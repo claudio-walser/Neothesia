@@ -153,6 +153,10 @@ impl MidiPlayer {
         std::mem::drop(events);
 
         self.clear();
+        // Notes that were sounding before the jump never get their NoteOff, and recent
+        // user presses belong to the old position. Without this, a loop that ends and
+        // starts with the same note would not wait for the player.
+        self.play_along.clear();
         self.send_midi_programs_for_timestamp(&time);
     }
 
@@ -395,5 +399,33 @@ impl PlayAlong {
 
     pub fn are_required_keys_pressed(&self) -> bool {
         self.required_notes.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note_on(key: u8) -> MidiMessage {
+        MidiMessage::NoteOn {
+            key: key.into(),
+            vel: 100.into(),
+        }
+    }
+
+    #[test]
+    fn note_sounding_before_a_jump_does_not_hide_the_next_one() {
+        let mut play_along = PlayAlong::new(piano_layout::KeyboardRange::standard_88_keys());
+
+        // Last note of a loop, the jump happens before its NoteOff
+        play_along.midi_event(MidiEventSource::File, &note_on(60));
+        play_along.midi_event(MidiEventSource::User, &note_on(60));
+        assert!(play_along.are_required_keys_pressed());
+
+        play_along.clear();
+
+        // First note of the next loop iteration must wait for the player
+        play_along.midi_event(MidiEventSource::File, &note_on(60));
+        assert!(!play_along.are_required_keys_pressed());
     }
 }
