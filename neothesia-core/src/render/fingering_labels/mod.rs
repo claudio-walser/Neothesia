@@ -2,7 +2,7 @@ use midi_file::MidiNote;
 
 use crate::{fingering::Fingering, utils::Point};
 
-use super::{KeyboardRenderer, TextRenderer, waterfall::NoteList};
+use super::{KeyboardRenderer, TextRenderer, TrackOpacity, waterfall::NoteList};
 
 const AUTO_COLOR: glyphon::Color = glyphon::Color::rgb(255, 255, 255);
 const OVERRIDE_COLOR: glyphon::Color = glyphon::Color::rgb(255, 205, 60);
@@ -57,6 +57,7 @@ pub struct FingeringLabels {
     /// Leave room for note name labels at the bottom of each note
     above_note_labels: bool,
     labels_cache: LabelsCache,
+    track_opacity: TrackOpacity,
     /// Rendered above the waterfall
     notes_text: TextRenderer,
     /// Rendered above the keyboard
@@ -80,6 +81,7 @@ impl FingeringLabels {
             on_keys,
             above_note_labels,
             labels_cache: LabelsCache::default(),
+            track_opacity: TrackOpacity::default(),
             notes_text,
             keys_text,
         }
@@ -87,6 +89,11 @@ impl FingeringLabels {
 
     pub fn set_pos(&mut self, pos: Point<f32>) {
         self.pos = pos;
+    }
+
+    /// Sets the opacity of the labels of a track, e.g. to fade out muted tracks
+    pub fn set_track_opacity(&mut self, track_id: usize, opacity: f32) {
+        self.track_opacity.set(track_id, opacity);
     }
 
     pub fn set_fingering(&mut self, fingering: Fingering) {
@@ -116,6 +123,7 @@ impl FingeringLabels {
         let labels = self.labels_cache.get(label_size);
         let animation_speed = animation_speed / scale;
         let fingering = &self.fingering;
+        let track_opacity = &self.track_opacity;
         let y_offset = if self.above_note_labels {
             label_size * 2.0
         } else {
@@ -147,6 +155,7 @@ impl FingeringLabels {
                 } else {
                     AUTO_COLOR
                 };
+                let color = track_opacity.apply(note.track_id, color);
 
                 Some(text_area(buffer, x, y, color))
             });
@@ -174,6 +183,7 @@ impl FingeringLabels {
                         NEUTRAL_KEY_COLOR,
                     )
                 };
+                let color = track_opacity.apply(note.track_id, color);
 
                 Some(text_area(buffer, x, y, color))
             });

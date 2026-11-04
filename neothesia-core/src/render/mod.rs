@@ -7,6 +7,7 @@ mod keyboard;
 mod note_labels;
 mod quad;
 mod text;
+mod track_opacity;
 mod waterfall;
 
 pub use background_animation::BgPipeline;
@@ -18,4 +19,5 @@ pub use keyboard::{KeyState as KeyboardKeyState, KeyboardRenderer};
 pub use note_labels::NoteLabels;
 pub use quad::{QuadInstance, QuadRenderer, QuadRendererFactory};
 pub use text::{TextAlign, TextRenderer, TextRendererFactory, glyphon};
+pub use track_opacity::TrackOpacity;
 pub use waterfall::{LiveWaterfallRenderer, NoteList, WaterfallRenderer};

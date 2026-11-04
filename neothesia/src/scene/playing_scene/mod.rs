@@ -110,17 +110,16 @@ impl PlayingScene {
             &ctx.transform,
             keyboard_layout.clone(),
         );
-
         let text_renderer = ctx.text_renderer_factory.new_renderer();
 
-        let note_labels = ctx.config.note_labels().then_some(NoteLabels::new(
+        let mut note_labels = ctx.config.note_labels().then_some(NoteLabels::new(
             *keyboard.pos(),
             waterfall.notes(),
             ctx.config.waterfall_note_naming(),
             ctx.text_renderer_factory.new_renderer(),
         ));
 
-        let fingering_labels = ctx.config.fingering().then(|| {
+        let mut fingering_labels = ctx.config.fingering().then(|| {
             FingeringLabels::new(
                 *keyboard.pos(),
                 waterfall.notes(),
@@ -131,6 +130,18 @@ impl PlayingScene {
                 ctx.text_renderer_factory.new_renderer(),
             )
         });
+
+        // Muted tracks stay visible, just faded out
+        for track in song.config.tracks.iter() {
+            let opacity = track.note_opacity();
+            waterfall.set_track_opacity(track.track_id, opacity);
+            if let Some(labels) = note_labels.as_mut() {
+                labels.set_track_opacity(track.track_id, opacity);
+            }
+            if let Some(labels) = fingering_labels.as_mut() {
+                labels.set_track_opacity(track.track_id, opacity);
+            }
+        }
 
         let timing_judge = ctx.config.strict_timing().then(|| {
             TimingJudge::new(waterfall.notes().iter(), |note| {

@@ -24,6 +24,7 @@ struct NoteInstance {
     @location(2) size: vec2<f32>,
     @location(3) color: vec3<f32>,
     @location(4) radius: f32,
+    @location(5) alpha: f32,
 }
 
 struct VertexOutput {
@@ -34,6 +35,7 @@ struct VertexOutput {
     @location(2) color: vec3<f32>,
     @location(3) radius: f32,
     @location(4) note_pos: vec2<f32>,
+    @location(5) alpha: f32,
 }
 
 @vertex
@@ -77,6 +79,7 @@ fn vs_main(vertex: Vertex, note: NoteInstance) -> VertexOutput {
     out.size = size;
     out.color = note.color;
     out.radius = note.radius * view_uniform.scale;
+    out.alpha = note.alpha;
 
     return out;
 }
@@ -117,5 +120,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         dist,
     );
 
-    return vec4<f32>(in.color, alpha);
+    return vec4<f32>(in.color, alpha * in.alpha);
 }

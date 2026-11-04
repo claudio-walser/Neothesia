@@ -1,6 +1,6 @@
 use crate::{config::NoteNaming, utils::Point};
 
-use super::{KeyboardRenderer, TextRenderer, waterfall::NoteList};
+use super::{KeyboardRenderer, TextRenderer, TrackOpacity, waterfall::NoteList};
 
 #[derive(Default)]
 struct LabelsCache {
@@ -51,6 +51,7 @@ pub struct NoteLabels {
     pos: Point<f32>,
     notes: NoteList,
     labels_cache: LabelsCache,
+    track_opacity: TrackOpacity,
     text_renderer: TextRenderer,
 }
 
@@ -68,12 +69,18 @@ impl NoteLabels {
                 naming,
                 ..Default::default()
             },
+            track_opacity: TrackOpacity::default(),
             text_renderer,
         }
     }
 
     pub fn set_pos(&mut self, pos: Point<f32>) {
         self.pos = pos;
+    }
+
+    /// Sets the opacity of the labels of a track, e.g. to fade out muted tracks
+    pub fn set_track_opacity(&mut self, track_id: usize, opacity: f32) {
+        self.track_opacity.set(track_id, opacity);
     }
 
     #[profiling::function]
@@ -91,6 +98,7 @@ impl NoteLabels {
 
         let labels = self.labels_cache.get(keyboard);
         let animation_speed = animation_speed / scale;
+        let track_opacity = &self.track_opacity;
 
         let iter = self
             .notes
@@ -105,13 +113,13 @@ impl NoteLabels {
                 let y =
                     self.pos.y - (note.start.as_secs_f32() - time) * animation_speed - label_width;
 
-                (buffer, x, y)
+                (buffer, x, y, note.track_id)
             })
             // Stop iteration once we reach top of the screen
-            .take_while(|(_buffer, _x, y)| *y > 0.0)
+            .take_while(|(_buffer, _x, y, _track_id)| *y > 0.0)
             // TODO: Cache last note idx to skip this NoOp skip iteration
-            .skip_while(|(_buffer, _x, y)| *y > keyboard.pos().y)
-            .map(|(buffer, left, top)| glyphon::TextArea {
+            .skip_while(|(_buffer, _x, y, _track_id)| *y > keyboard.pos().y)
+            .map(|(buffer, left, top, track_id)| glyphon::TextArea {
                 buffer,
                 left,
                 top,
@@ -122,7 +130,7 @@ impl NoteLabels {
                     right: i32::MAX,
                     bottom: i32::MAX,
                 },
-                default_color: glyphon::Color::rgb(255, 255, 255),
+                default_color: track_opacity.apply(track_id, glyphon::Color::rgb(255, 255, 255)),
                 custom_glyphs: &[],
             });
 

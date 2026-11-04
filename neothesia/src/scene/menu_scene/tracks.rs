@@ -1,7 +1,7 @@
 use midi_file::MidiTrack;
 use neothesia_core::fingering::HandAssignment;
 use nuon::TextAlign;
-use std::hash::Hash;
+use std::{hash::Hash, time::Instant};
 
 use crate::{
     context::Context,
@@ -54,69 +54,128 @@ impl super::MenuScene {
                 .scissor_size(win_w, (win_h - bottom_bar_h).max(0.0))
                 .build(ui, |ui| {
                     let gap = 14.0;
+                    let top_margin = 60.0;
 
-                    let mut tracks = song
+                    let mut tracks: Vec<&MidiTrack> = song
                         .file
                         .tracks
                         .iter()
                         .filter(|t| !t.notes.is_empty())
-                        .enumerate();
+                        .collect();
 
-                    let layout = CardsLayout::new(win_w, tracks.clone().count());
+                    // Lay the cards out like the hands on the keyboard: left hand first,
+                    // right hand last, everything else keeps its file order in between
+                    let resolved = song.resolved_hands();
+                    let resolved_hand = |track_id: usize| {
+                        resolved
+                            .iter()
+                            .find(|(id, _)| *id == track_id)
+                            .map(|(_, hand)| *hand)
+                    };
+                    let hand_rank = |track_id: usize| match resolved_hand(track_id) {
+                        Some(HandAssignment::Left) => 0,
+                        Some(HandAssignment::Right) => 2,
+                        _ => 1,
+                    };
+                    tracks.sort_by_key(|t| hand_rank(t.track_id));
 
-                    let top_margin = 60.0;
+                    let layout = CardsLayout::new(win_w, tracks.len());
+                    let columns = layout.columns as usize;
+                    let origin_x = nuon::center_x(win_w, layout.width);
 
-                    nuon::translate().y(top_margin).add_to_current(ui);
+                    let mut event = None;
 
-                    loop {
-                        let mut end = false;
-                        nuon::translate()
-                            .x(nuon::center_x(win_w, layout.width))
-                            .build(ui, |ui| {
-                                for _ in 0..layout.columns {
-                                    let Some((id, track)) = tracks.next() else {
-                                        end = true;
-                                        break;
-                                    };
+                    for (slot, track) in tracks.iter().enumerate() {
+                        let col = slot % columns;
+                        let row = slot / columns;
+                        let target = (
+                            origin_x + col as f32 * (CARD_W + gap),
+                            top_margin + row as f32 * (CARD_H + gap),
+                        );
 
-                                    let config = &song.config.tracks[track.track_id];
+                        let id = nuon::Id::hash_with(|h| {
+                            "track_card".hash(h);
+                            track.track_id.hash(h);
+                        });
 
-                                    match self::track_card(
-                                        ctx,
-                                        ui,
-                                        nuon::Id::hash_with(|h| {
-                                            "track_card".hash(h);
-                                            id.hash(h);
-                                        }),
-                                        track,
-                                        config,
-                                    ) {
-                                        TrackCardEvent::PlayerConfig(player) => {
-                                            song.config.tracks[track.track_id].player = player;
-                                        }
-                                        TrackCardEvent::SetVisible(visible) => {
-                                            song.config.tracks[track.track_id].visible = visible;
-                                        }
-                                        TrackCardEvent::SetHand(hand) => {
-                                            song.config.tracks[track.track_id].hand = hand;
-                                            song.fingering.set_hand(track.track_id, hand);
-                                            song.fingering.save();
-                                        }
-                                        TrackCardEvent::Idle => {}
-                                    }
+                        let (x, y) = ui.data::<CardAnimation>(id).step(target);
 
-                                    nuon::translate().x(CARD_W + gap).add_to_current(ui);
-                                }
-                            });
+                        let config = &song.config.tracks[track.track_id];
 
-                        nuon::translate().y(CARD_H + gap).add_to_current(ui);
-
-                        if end {
-                            break;
-                        }
+                        nuon::translate().pos(x, y).build(ui, |ui| {
+                            let hand = resolved_hand(track.track_id).unwrap_or(config.hand);
+                            let paired = resolved.len() == 2 && hand != HandAssignment::Auto;
+                            match self::track_card(ctx, ui, id, track, config, hand, paired) {
+                                TrackCardEvent::Idle => {}
+                                e => event = Some((track.track_id, e)),
+                            }
+                        });
                     }
+
+                    let rows = tracks.len().div_ceil(columns);
+
+                    match event {
+                        Some((track_id, TrackCardEvent::PlayerConfig(player))) => {
+                            song.config.tracks[track_id].player = player;
+                        }
+                        Some((track_id, TrackCardEvent::SetMutedOpacity(opacity))) => {
+                            let track = &mut song.config.tracks[track_id];
+                            track.player = PlayerConfig::Mute;
+                            track.muted_opacity = opacity;
+                        }
+                        Some((track_id, TrackCardEvent::SetVisible(visible))) => {
+                            song.config.tracks[track_id].visible = visible;
+                        }
+                        Some((track_id, TrackCardEvent::SetHand(hand))) => {
+                            song.set_hand(track_id, hand);
+                        }
+                        Some((_, TrackCardEvent::Idle)) | None => {}
+                    }
+
+                    // Content height for the scroll area
+                    nuon::translate()
+                        .y(top_margin + rows as f32 * (CARD_H + gap))
+                        .add_to_current(ui);
                 });
         }
+    }
+}
+
+/// Smoothly moves a track card towards its slot when the order changes
+#[derive(Default)]
+struct CardAnimation {
+    pos: Option<(f32, f32)>,
+    last_frame: Option<Instant>,
+}
+
+impl CardAnimation {
+    /// Higher is snappier
+    const SPEED: f32 = 12.0;
+
+    fn step(&mut self, target: (f32, f32)) -> (f32, f32) {
+        let now = Instant::now();
+        let dt = self
+            .last_frame
+            .map(|last| now.duration_since(last).as_secs_f32())
+            .unwrap_or(0.0)
+            // Don't jump after a long pause (e.g. coming back to this page)
+            .min(0.1);
+        self.last_frame = Some(now);
+
+        let pos = match self.pos {
+            // First time we see this card, no animation
+            None => target,
+            Some((x, y)) => {
+                let t = 1.0 - (-Self::SPEED * dt).exp();
+                let x = x + (target.0 - x) * t;
+                let y = y + (target.1 - y) * t;
+                let snap = |v: f32, target: f32| if (v - target).abs() < 0.5 { target } else { v };
+                (snap(x, target.0), snap(y, target.1))
+            }
+        };
+
+        self.pos = Some(pos);
+        pos
     }
 }
 
@@ -157,6 +216,8 @@ impl CardsLayout {
 #[derive(Debug)]
 enum TrackCardEvent {
     PlayerConfig(PlayerConfig),
+    /// Mutes the track and sets how visible its notes stay in the waterfall
+    SetMutedOpacity(f32),
     SetVisible(bool),
     SetHand(HandAssignment),
     Idle,
@@ -168,6 +229,10 @@ fn track_card(
     id: impl Into<nuon::Id>,
     track: &MidiTrack,
     config: &TrackConfig,
+    // Effective hand, `Auto` only when it can't be resolved (e.g. a single two-hand track)
+    hand: HandAssignment,
+    // One of exactly two hand tracks, the other one always plays the opposite hand
+    paired: bool,
 ) -> TrackCardEvent {
     let card_w = CARD_W;
     let card_h = CARD_H;
@@ -244,10 +309,19 @@ fn track_card(
         let hand_btn_w = 70.0;
 
         if show_hand {
-            let (label, next) = match config.hand {
-                HandAssignment::Auto => (locals::menu::hand_auto(), HandAssignment::Left),
+            // Paired tracks just toggle between left and right, the button names the side
+            // the card moves to. Other tracks keep `Auto` in the cycle (e.g. a single track
+            // for both hands needs the auto split) and show their current hand.
+            let (label, next) = match hand {
+                HandAssignment::Left if paired => {
+                    (locals::menu::hand_right(), HandAssignment::Right)
+                }
+                HandAssignment::Right if paired => {
+                    (locals::menu::hand_left(), HandAssignment::Left)
+                }
                 HandAssignment::Left => (locals::menu::hand_left(), HandAssignment::Right),
                 HandAssignment::Right => (locals::menu::hand_right(), HandAssignment::Auto),
+                HandAssignment::Auto => (locals::menu::hand_auto(), HandAssignment::Left),
             };
 
             if nuon::button()
@@ -306,21 +380,27 @@ fn track_card(
                 }
             };
 
-            if nuon::button()
-                .id(nuon::Id::hash_with(|h| {
+            let muted = config.player == PlayerConfig::Mute;
+            match mute_button(
+                ui,
+                nuon::Id::hash_with(|h| {
                     id.as_raw().hash(h);
                     "mute".hash(h);
-                }))
-                .x(0.0)
-                .size(btn_w, 40.0)
-                .color(color(PlayerConfig::Mute))
-                .hover_color(hover_color(PlayerConfig::Mute))
-                .preseed_color(color(PlayerConfig::Mute))
-                .border_radius([255.0, 0.0, 0.0, 255.0])
-                .label("Mute")
-                .build(ui)
-            {
-                res = TrackCardEvent::PlayerConfig(PlayerConfig::Mute);
+                }),
+                btn_w,
+                40.0,
+                muted,
+                config.muted_opacity,
+                color(PlayerConfig::Mute),
+                hover_color(PlayerConfig::Mute),
+            ) {
+                MuteButtonEvent::Idle => {}
+                MuteButtonEvent::Clicked => {
+                    res = TrackCardEvent::PlayerConfig(PlayerConfig::Mute);
+                }
+                MuteButtonEvent::Opacity(opacity) => {
+                    res = TrackCardEvent::SetMutedOpacity(opacity);
+                }
             }
 
             if nuon::button()
@@ -358,6 +438,111 @@ fn track_card(
             }
         });
     });
+
+    res
+}
+
+enum MuteButtonEvent {
+    Idle,
+    Clicked,
+    /// The opacity slider was dragged
+    Opacity(f32),
+}
+
+#[derive(Default)]
+struct MuteDrag {
+    /// Pointer x where the press started
+    start_x: Option<f32>,
+    dragging: bool,
+}
+
+/// Mute button that doubles as a slider for the opacity of the muted track's notes.
+///
+/// A click mutes the track, dragging horizontally mutes it and sets the opacity
+/// (left edge transparent, right edge fully visible).
+#[allow(clippy::too_many_arguments)]
+fn mute_button(
+    ui: &mut nuon::Ui,
+    id: nuon::Id,
+    w: f32,
+    h: f32,
+    muted: bool,
+    opacity: f32,
+    color: nuon::Color,
+    hover_color: nuon::Color,
+) -> MuteButtonEvent {
+    /// Pointer travel before a press turns into a drag
+    const DRAG_THRESHOLD: f32 = 4.0;
+    const BAR_PAD: f32 = 16.0;
+
+    let event = nuon::click_area(id).size(w, h).build(ui);
+    let x = event.local_pos().x;
+    let bar_w = w - BAR_PAD * 2.0;
+    let opacity_at = |x: f32| ((x - BAR_PAD) / bar_w).clamp(0.0, 1.0);
+
+    let drag = ui.data::<MuteDrag>(id);
+    if event.is_press_start() {
+        drag.start_x = Some(x);
+        drag.dragging = false;
+    }
+    if let Some(start_x) = drag.start_x
+        && (event.is_pressed() || event.is_press_end())
+        && (x - start_x).abs() > DRAG_THRESHOLD
+    {
+        drag.dragging = true;
+    }
+    let dragging = drag.dragging;
+    if event.is_press_end() {
+        *drag = MuteDrag::default();
+    }
+
+    let res = if dragging {
+        MuteButtonEvent::Opacity(opacity_at(x))
+    } else if event.is_clicked() {
+        MuteButtonEvent::Clicked
+    } else {
+        MuteButtonEvent::Idle
+    };
+
+    // While dragging show the value under the pointer, the config catches up next frame
+    let (muted, opacity) = match res {
+        MuteButtonEvent::Opacity(opacity) => (true, opacity),
+        _ => (muted, opacity),
+    };
+
+    let bg = if event.is_hovered() { hover_color } else { color };
+    nuon::quad()
+        .size(w, h)
+        .color(bg)
+        .border_radius([255.0, 0.0, 0.0, 255.0])
+        .build(ui);
+
+    let text = if muted {
+        format!("Mute {}%", (opacity * 100.0).round() as u32)
+    } else {
+        "Mute".to_string()
+    };
+    nuon::label()
+        .size(w, if muted { h - 6.0 } else { h })
+        .text(text)
+        .build(ui);
+
+    if muted {
+        let bar_h = 3.0;
+        let bar_y = h - 10.0;
+        nuon::quad()
+            .pos(BAR_PAD, bar_y)
+            .size(bar_w, bar_h)
+            .color(nuon::Color::new(0.0, 0.0, 0.0, 0.3))
+            .border_radius([bar_h / 2.0; 4])
+            .build(ui);
+        nuon::quad()
+            .pos(BAR_PAD, bar_y)
+            .size((bar_w * opacity).max(bar_h), bar_h)
+            .color(nuon::Color::new(1.0, 1.0, 1.0, 0.9))
+            .border_radius([bar_h / 2.0; 4])
+            .build(ui);
+    }
 
     res
 }

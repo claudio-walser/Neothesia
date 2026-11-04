@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::{TransformUniform, Uniform, config::Config};
+use crate::{TransformUniform, Uniform, config::Config, render::TrackOpacity};
 use midi_file::{MidiNote, MidiTrack};
 use wgpu_jumpstart::{Color, Gpu};
 
@@ -50,6 +50,7 @@ pub struct WaterfallRenderer {
     instances: Vec<Option<(usize, [f32; 3])>>,
     /// Per [`NoteList`] index: color replacing the schema color
     color_overrides: Vec<Option<Color>>,
+    track_opacity: TrackOpacity,
     instances_dirty: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -71,6 +72,7 @@ impl WaterfallRenderer {
             notes_pipeline,
             instances: Vec::new(),
             color_overrides: vec![None; notes.len()],
+            track_opacity: TrackOpacity::default(),
             instances_dirty: false,
             notes,
             device: gpu.device.clone(),
@@ -137,11 +139,13 @@ impl WaterfallRenderer {
                     0.1
                 };
 
+                let alpha = self.track_opacity.get(note.track_id);
                 self.notes_pipeline.instances().push(NoteInstance {
                     position: [key.x(), note.start.as_secs_f32()],
                     size: [key.width() - 1.0, h - 0.01], // h - 0.01 to make a little gap bettwen successive notes
                     color,
                     radius: key.width() * 0.2,
+                    alpha,
                 });
             } else {
                 self.instances.push(None);
@@ -165,6 +169,21 @@ impl WaterfallRenderer {
         if self.instances_dirty {
             self.instances_dirty = false;
             self.notes_pipeline.prepare(&self.device, &self.queue);
+        }
+    }
+
+    /// Sets the opacity of all notes of a track, e.g. to fade out muted tracks
+    pub fn set_track_opacity(&mut self, track_id: usize, opacity: f32) {
+        self.track_opacity.set(track_id, opacity);
+        let opacity = self.track_opacity.get(track_id);
+
+        for (note, instance) in self.notes.inner.iter().zip(&self.instances) {
+            if let Some((instance_id, _)) = instance
+                && note.track_id == track_id
+            {
+                self.notes_pipeline.instances()[*instance_id].alpha = opacity;
+                self.instances_dirty = true;
+            }
         }
     }
 

@@ -70,24 +70,11 @@ impl Fingering {
                 .filter(|n| n.channel != 9)
         };
 
-        let parts: Vec<(usize, HandAssignment)> = parts
-            .iter()
-            .copied()
-            .filter(|(track_id, _)| part_notes(*track_id).next().is_some())
-            .collect();
-
         let mut left: Vec<&MidiNote> = Vec::new();
         let mut right: Vec<&MidiNote> = Vec::new();
         let mut auto: Vec<&MidiNote> = Vec::new();
 
-        let resolved = resolve_two_parts(&parts, |track_id| {
-            let (sum, count) = part_notes(track_id).fold((0u64, 0u64), |(sum, count), n| {
-                (sum + n.note as u64, count + 1)
-            });
-            sum as f32 / count as f32
-        });
-
-        for (track_id, assignment) in resolved {
+        for (track_id, assignment) in resolve_hands(tracks, parts) {
             let target = match assignment {
                 HandAssignment::Left => &mut left,
                 HandAssignment::Right => &mut right,
@@ -149,6 +136,37 @@ impl Fingering {
             .copied()
             .flatten()
     }
+}
+
+/// Resolves the hand of every `(track_id, hand)` part the way [`Fingering::compute`] does.
+///
+/// Parts without non-drum notes are dropped. When exactly two parts remain they are treated
+/// as one per hand, so `Auto` is resolved against the other part (or by mean pitch).
+pub fn resolve_hands(
+    tracks: &[MidiTrack],
+    parts: &[(usize, HandAssignment)],
+) -> Vec<(usize, HandAssignment)> {
+    let part_notes = |track_id: usize| {
+        tracks
+            .iter()
+            .find(|t| t.track_id == track_id)
+            .into_iter()
+            .flat_map(|t| t.notes.iter())
+            .filter(|n| n.channel != 9)
+    };
+
+    let parts: Vec<(usize, HandAssignment)> = parts
+        .iter()
+        .copied()
+        .filter(|(track_id, _)| part_notes(*track_id).next().is_some())
+        .collect();
+
+    resolve_two_parts(&parts, |track_id| {
+        let (sum, count) = part_notes(track_id).fold((0u64, 0u64), |(sum, count), n| {
+            (sum + n.note as u64, count + 1)
+        });
+        sum as f32 / count as f32
+    })
 }
 
 /// When a song has exactly two parts, they are most likely one per hand
