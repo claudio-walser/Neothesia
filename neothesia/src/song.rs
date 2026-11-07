@@ -1,7 +1,8 @@
 use std::path::Path;
 
+use midi_file::MidiNote;
 use midi_file::MidiTrack;
-use neothesia_core::fingering::{FingeringStore, HandAssignment, resolve_hands};
+use neothesia_core::fingering::{FingeringStore, HandAssignment, NoteKey, resolve_hands};
 
 use crate::context::Context;
 
@@ -78,7 +79,13 @@ impl Song {
         Self::with_fingering(file, FingeringStore::load(path))
     }
 
-    fn with_fingering(file: midi_file::MidiFile, fingering: FingeringStore) -> Self {
+    fn with_fingering(mut file: midi_file::MidiFile, fingering: FingeringStore) -> Self {
+        for (key, to_track) in &fingering.moves {
+            if !move_note(&mut file, key, *to_track) {
+                log::warn!("Could not move note {key:?} to track {to_track}");
+            }
+        }
+
         let config = SongConfig::new(&file.tracks, &fingering);
         Self {
             file,
@@ -150,6 +157,27 @@ impl Song {
         self.fingering.save();
     }
 
+    /// Moves a single note to another track and persists it
+    pub fn move_note(&mut self, note: &MidiNote, to_track: usize) -> bool {
+        if !move_note(&mut self.file, &NoteKey::new(note), to_track) {
+            return false;
+        }
+        self.fingering.move_note(note, to_track);
+        self.fingering.save();
+        true
+    }
+
+    /// Non-drum tracks with notes, the ones a note can be moved to
+    pub fn note_tracks(&self) -> Vec<usize> {
+        self.file
+            .tracks
+            .iter()
+            .filter(|t| !(t.has_drums && !t.has_other_than_drums))
+            .filter(|t| !t.notes.is_empty())
+            .map(|t| t.track_id)
+            .collect()
+    }
+
     pub fn from_env(ctx: &Context) -> Option<Self> {
         let path = std::env::args()
             .nth(1)
@@ -159,4 +187,16 @@ impl Song {
         let midi_file = midi_file::MidiFile::new(&path).ok()?;
         Some(Self::from_path(midi_file, &path))
     }
+}
+
+fn move_note(file: &mut midi_file::MidiFile, key: &NoteKey, to_track: usize) -> bool {
+    let Some(start) = file.tracks.get(key.track).and_then(|t| {
+        t.notes
+            .iter()
+            .find(|n| n.note == key.note && n.start.as_micros() as u64 == key.start_us)
+            .map(|n| n.start)
+    }) else {
+        return false;
+    };
+    file.move_note(key.track, start, key.note, to_track)
 }

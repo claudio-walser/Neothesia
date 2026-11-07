@@ -148,4 +148,55 @@ mod tests {
     fn load() {
         let _midi = MidiFile::new("../test.mid").unwrap();
     }
+
+    #[test]
+    fn move_note() {
+        let mut midi = MidiFile::new("../test.mid").unwrap();
+        let with_notes: Vec<usize> = midi
+            .tracks
+            .iter()
+            .filter(|t| !t.notes.is_empty())
+            .map(|t| t.track_id)
+            .collect();
+        let [from, to, ..] = with_notes[..] else {
+            panic!("test.mid needs two tracks with notes");
+        };
+
+        let note = midi.tracks[from].notes[3].clone();
+        let (from_notes, to_notes) = (midi.tracks[from].notes.len(), midi.tracks[to].notes.len());
+        let (from_events, to_events) =
+            (midi.tracks[from].events.len(), midi.tracks[to].events.len());
+
+        assert!(midi.move_note(from, note.start, note.note, to));
+
+        assert_eq!(midi.tracks[from].notes.len(), from_notes - 1);
+        assert_eq!(midi.tracks[to].notes.len(), to_notes + 1);
+        assert_eq!(midi.tracks[from].events.len(), from_events - 2);
+        assert_eq!(midi.tracks[to].events.len(), to_events + 2);
+
+        let moved = midi.tracks[to]
+            .notes
+            .iter()
+            .find(|n| n.start == note.start && n.note == note.note)
+            .unwrap();
+        assert_eq!(moved.track_id, to);
+        assert_eq!(moved.end, note.end);
+
+        for track in [from, to] {
+            let track = &midi.tracks[track];
+            assert!(track.notes.iter().enumerate().all(|(i, n)| n.id == i));
+            assert!(
+                track
+                    .events
+                    .windows(2)
+                    .all(|w| w[0].timestamp <= w[1].timestamp)
+            );
+            assert!(track.events.iter().all(|e| e.track_id == track.track_id));
+        }
+
+        // And back again
+        assert!(midi.move_note(to, note.start, note.note, from));
+        assert_eq!(midi.tracks[from].notes.len(), from_notes);
+        assert_eq!(midi.tracks[to].events.len(), to_events);
+    }
 }

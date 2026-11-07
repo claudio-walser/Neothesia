@@ -588,6 +588,35 @@ pub mod playing {
         }
     }
 
+    pub fn selection_hint(fingering: bool) -> String {
+        let moving = match LOCAL.as_str() {
+            "pl" => "L/R: ręka, T: następna ścieżka",
+            "de" => "L/R: Hand, T: nächster Track",
+            _ => "L/R: hand, T: next track",
+        };
+        if fingering {
+            format!("{}, {moving}", fingering_hint())
+        } else {
+            moving.into()
+        }
+    }
+
+    pub fn note_moved(track: usize) -> String {
+        match LOCAL.as_str() {
+            "pl" => format!("Nuta w ścieżce {track}"),
+            "de" => format!("Note in Track {track}"),
+            _ => format!("Note in track {track}"),
+        }
+    }
+
+    pub fn no_track_for_hand() -> String {
+        match LOCAL.as_str() {
+            "pl" => "Brak ścieżki dla tej ręki".into(),
+            "de" => "Kein Track für diese Hand".into(),
+            _ => "No track for this hand".into(),
+        }
+    }
+
     pub fn finger_set(finger: u8) -> String {
         match LOCAL.as_str() {
             "pl" => format!("Palec {finger}"),

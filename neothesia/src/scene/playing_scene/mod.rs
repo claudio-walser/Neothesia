@@ -1,7 +1,7 @@
 use midi_file::{MidiNote, midly::MidiMessage};
 use neothesia_core::{
     Color,
-    fingering::{Fingering, NoteKey},
+    fingering::{Fingering, HandAssignment, NoteKey},
     render::{
         FingeringLabels, GlowRenderer, GuidelineRenderer, NoteLabels, QuadInstance, QuadRenderer,
         TextRenderer,
@@ -56,7 +56,7 @@ pub struct PlayingScene {
 
     note_labels: Option<NoteLabels>,
     fingering_labels: Option<FingeringLabels>,
-    /// Note picked for fingering edit
+    /// Note picked for fingering edit or moving to another track
     selected_note: Option<MidiNote>,
     /// Time the waterfall was last rendered at
     waterfall_time: f32,
@@ -369,7 +369,7 @@ impl PlayingScene {
     }
 
     fn note_at_cursor(&self, ctx: &Context) -> Option<MidiNote> {
-        let fingering = self.fingering_labels.as_ref()?.fingering();
+        let fingering = self.fingering_labels.as_ref().map(|l| l.fingering());
         let pos = nuon::Point::new(
             ctx.window_state.cursor_logical_position.x,
             ctx.window_state.cursor_logical_position.y,
@@ -382,7 +382,8 @@ impl PlayingScene {
         self.waterfall
             .notes()
             .iter()
-            .filter(|note| fingering.get(note).is_some())
+            .filter(|note| note.channel != 9)
+            .filter(|note| fingering.is_none_or(|f| f.get(note).is_some()))
             .filter_map(|note| Some((note, self.note_rect(ctx, note)?)))
             .filter(|(_, rect)| rect.contains(pos))
             // Sharp notes are narrower and drawn over neutral ones
@@ -392,10 +393,6 @@ impl PlayingScene {
 
     /// Returns true when the event was consumed
     fn handle_fingering_input(&mut self, ctx: &mut Context, event: &WindowEvent) -> bool {
-        if self.fingering_labels.is_none() {
-            return false;
-        }
-
         // Don't steal clicks from the top bar
         if event.left_mouse_pressed()
             && self.player.is_paused()
@@ -403,7 +400,9 @@ impl PlayingScene {
         {
             self.selected_note = self.note_at_cursor(ctx);
             if self.selected_note.is_some() {
-                self.toast_manager.toast(locals::playing::fingering_hint());
+                self.toast_manager.toast(locals::playing::selection_hint(
+                    self.fingering_labels.is_some(),
+                ));
             }
             return false;
         }
@@ -424,6 +423,30 @@ impl PlayingScene {
         else {
             return false;
         };
+
+        let move_to = match code {
+            KeyCode::KeyL => Some(MoveTarget::Hand(HandAssignment::Left)),
+            KeyCode::KeyR => Some(MoveTarget::Hand(HandAssignment::Right)),
+            KeyCode::KeyT => Some(MoveTarget::NextTrack),
+            _ => None,
+        };
+        if let Some(target) = move_to {
+            // Swallow the release as well, so the key does not reach pc-keyboard-to-midi
+            if *state == ElementState::Pressed {
+                self.move_note(ctx, &note, target);
+            }
+            return true;
+        }
+
+        if self.fingering_labels.is_none() {
+            if *code == KeyCode::Escape {
+                if *state == ElementState::Released {
+                    self.selected_note = None;
+                }
+                return true;
+            }
+            return false;
+        }
 
         let finger = match code {
             KeyCode::Digit1 | KeyCode::Numpad1 => Some(1),
@@ -449,6 +472,79 @@ impl PlayingScene {
         true
     }
 
+    fn move_note(&mut self, ctx: &mut Context, note: &MidiNote, target: MoveTarget) {
+        let song = self.player.song();
+        let to_track = match target {
+            MoveTarget::Hand(hand) => song
+                .resolved_hands()
+                .into_iter()
+                .find(|(_, h)| *h == hand)
+                .map(|(track, _)| track),
+            MoveTarget::NextTrack => {
+                let tracks = song.note_tracks();
+                tracks
+                    .iter()
+                    .position(|t| *t == note.track_id)
+                    .map(|i| tracks[(i + 1) % tracks.len()])
+                    .or(tracks.first().copied())
+            }
+        };
+
+        let Some(to_track) = to_track else {
+            self.toast_manager
+                .toast(locals::playing::no_track_for_hand());
+            return;
+        };
+
+        if to_track == note.track_id {
+            self.toast_manager
+                .toast(locals::playing::note_moved(to_track));
+            return;
+        }
+
+        if !self.player.song_mut().move_note(note, to_track) {
+            return;
+        }
+
+        self.rebuild(ctx);
+
+        // Keep the note selected, so it can be moved again right away
+        self.selected_note = self
+            .waterfall
+            .notes()
+            .iter()
+            .find(|n| n.track_id == to_track && n.start == note.start && n.note == note.note)
+            .cloned();
+
+        self.toast_manager
+            .toast(locals::playing::note_moved(to_track));
+    }
+
+    /// Recreates the scene from the (changed) song, keeping position and pause state
+    fn rebuild(&mut self, ctx: &mut Context) {
+        let time = self.player.time();
+        let paused = self.player.is_paused();
+        let song = self.player.song().clone();
+
+        let mut scene = PlayingScene::new(ctx, song);
+        scene.player.set_time(time);
+        if paused {
+            scene.player.pause();
+        }
+        scene.waterfall_time = scene.player.time_without_lead_in() + ctx.config.animation_offset();
+        scene.waterfall.update(scene.waterfall_time);
+        if let Some(judge) = scene.timing_judge.as_mut() {
+            judge.seek(scene.waterfall_time);
+        }
+
+        std::mem::swap(&mut scene.top_bar, &mut self.top_bar);
+        std::mem::swap(&mut scene.toast_manager, &mut self.toast_manager);
+        std::mem::swap(&mut scene.rewind_controller, &mut self.rewind_controller);
+
+        *self = scene;
+        self.resize(ctx);
+    }
+
     fn set_finger(&mut self, note: &MidiNote, finger: Option<u8>) {
         let song = self.player.song_mut();
         song.fingering.set_override(NoteKey::new(note), finger);
@@ -466,6 +562,14 @@ impl PlayingScene {
             None => locals::playing::finger_auto(),
         });
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MoveTarget {
+    /// The track playing this hand
+    Hand(HandAssignment),
+    /// Cycle through the tracks with notes
+    NextTrack,
 }
 
 impl Scene for PlayingScene {

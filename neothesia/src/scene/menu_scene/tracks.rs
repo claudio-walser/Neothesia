@@ -510,7 +510,11 @@ fn mute_button(
         _ => (muted, opacity),
     };
 
-    let bg = if event.is_hovered() { hover_color } else { color };
+    let bg = if event.is_hovered() {
+        hover_color
+    } else {
+        color
+    };
     nuon::quad()
         .size(w, h)
         .color(bg)

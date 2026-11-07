@@ -37,6 +37,8 @@ pub struct FingeringStore {
     midi_hash: u64,
     pub hands: BTreeMap<usize, HandAssignment>,
     pub overrides: BTreeMap<NoteKey, u8>,
+    /// Notes moved to another track, keyed by their position in the original file
+    pub moves: BTreeMap<NoteKey, usize>,
 }
 
 impl FingeringStore {
@@ -85,6 +87,18 @@ impl FingeringStore {
                 (key, o.finger)
             })
             .collect();
+        store.moves = file
+            .moves
+            .into_iter()
+            .map(|m| {
+                let key = NoteKey {
+                    track: m.track,
+                    start_us: m.start_us,
+                    note: m.note,
+                };
+                (key, m.to_track)
+            })
+            .collect();
 
         store
     }
@@ -107,6 +121,16 @@ impl FingeringStore {
                     start_us: key.start_us,
                     note: key.note,
                     finger: *finger,
+                })
+                .collect(),
+            moves: self
+                .moves
+                .iter()
+                .map(|(key, to_track)| NoteMove {
+                    track: key.track,
+                    start_us: key.start_us,
+                    note: key.note,
+                    to_track: *to_track,
                 })
                 .collect(),
         });
@@ -140,6 +164,42 @@ impl FingeringStore {
         };
     }
 
+    /// Records that `note` (as it is currently placed) now belongs to `to_track`.
+    ///
+    /// Moving a note back to its original track removes the move. A finger override of
+    /// the note follows it to the new track.
+    pub fn move_note(&mut self, note: &MidiNote, to_track: usize) {
+        let current = NoteKey::new(note);
+
+        // A note moved before is keyed by its original track
+        let original = self
+            .moves
+            .iter()
+            .find(|(key, track)| {
+                **track == current.track
+                    && key.start_us == current.start_us
+                    && key.note == current.note
+            })
+            .map(|(key, _)| *key)
+            .unwrap_or(current);
+
+        if original.track == to_track {
+            self.moves.remove(&original);
+        } else {
+            self.moves.insert(original, to_track);
+        }
+
+        if let Some(finger) = self.overrides.remove(&current) {
+            self.overrides.insert(
+                NoteKey {
+                    track: to_track,
+                    ..current
+                },
+                finger,
+            );
+        }
+    }
+
     pub fn hand(&self, track_id: usize) -> HandAssignment {
         self.hands.get(&track_id).copied().unwrap_or_default()
     }
@@ -165,6 +225,17 @@ struct FingeringFileV1 {
     hands: BTreeMap<usize, HandAssignment>,
     #[serde(default)]
     overrides: Vec<FingerOverride>,
+    #[serde(default)]
+    moves: Vec<NoteMove>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct NoteMove {
+    /// Original track of the note
+    track: usize,
+    start_us: u64,
+    note: u8,
+    to_track: usize,
 }
 
 #[derive(Serialize, Deserialize)]
